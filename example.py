@@ -45,22 +45,10 @@ if __name__ == "__main__":
             markers_list.append(base * (1.0 - t) + ridge * t)
     marker_positions = np.vstack(markers_list) if markers_list else np.zeros((0, 3))
 
-    # 3D visualization for reference.
+    # save the marker positions
+    np.savetxt("marker_world_coor.txt", marker_positions, fmt="%.3f")
+
     viz = DuotactVisualizer()
-    viz.show_static(
-        mesh,
-        title="Duotact side press (static deformation)",
-        force_vectors=[
-            {
-                "center": press_center,
-                "direction": press_dir,
-                "scale": 0.02,
-                "color": "orange",
-                "name": "press",
-            }
-        ],
-        markers=marker_positions,
-    )
 
     # Virtual camera placed below the frame, looking upward to capture both side surfaces.
     cam = SimpleCamera(width=1280, height=960, fov_y_deg=100)
@@ -71,8 +59,34 @@ if __name__ == "__main__":
     )
     cam.render_mesh(mesh, pose, out_path="camera_view.png", face_alpha=0.7, outline_only=True, markers=marker_positions)
 
+    # Save camera intrinsics and marker coordinates.
+    K = np.array(
+        [
+            [cam.fx, 0.0, cam.width * 0.5],
+            [0.0, cam.fy, cam.height * 0.5],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    np.savetxt("cam_intrinsic.txt", K, fmt="%.6f")
+
+    marker_cam = cam.to_camera_coords(marker_positions, pose)
+    np.savetxt("marker_3D_coor.txt", marker_cam, fmt="%.6f")
+
+    uv, z_mark = cam.project(marker_positions, pose)
+    marker_img = np.hstack([uv, z_mark.reshape(-1, 1)])
+    np.savetxt("marker_img_coor.txt", marker_img, fmt="%.3f")
+
     # Visualize camera and frustum together with the object.
     frustum = cam.frustum_segments(pose, near=0.005, far=0.08)
+    # Camera axes: Z axis points upward as requested.
+    forward = pose.target - pose.eye
+    forward = forward / (np.linalg.norm(forward) + 1e-9)
+    z_cam = forward
+    y_cam = -pose.up / (np.linalg.norm(pose.up) + 1e-9)
+    x_cam = np.cross(y_cam, z_cam)
+    x_cam = x_cam / (np.linalg.norm(x_cam) + 1e-9)
+    cam_axes = np.stack([x_cam, y_cam, z_cam], axis=1)
+
     viz.show_static(
         mesh,
         title="Duotact + camera frustum",
@@ -88,4 +102,6 @@ if __name__ == "__main__":
         frustum_segments=frustum,
         camera_point=pose.eye,
         markers=marker_positions,
+        camera_axes=cam_axes,
+        camera_axes_scale=0.02,
     )

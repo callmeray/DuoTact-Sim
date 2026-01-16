@@ -27,26 +27,52 @@ class SimpleCamera:
     def fov_x(self) -> float:
         return 2.0 * math.atan(0.5 * self.width / self.fx)
 
-    @staticmethod
-    def _look_at(eye: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
-        f = target - eye
-        f = f / (np.linalg.norm(f) + 1e-9)
-        u = up / (np.linalg.norm(up) + 1e-9)
-        s = np.cross(f, u)
-        s = s / (np.linalg.norm(s) + 1e-9)
-        u2 = np.cross(s, f)
-        # Camera space: x=s, y=u2, z=-f
-        return np.stack([s, u2, -f], axis=0)
+    def intrinsic_matrix(self) -> np.ndarray:
+        return np.array(
+            [
+                [self.fx, 0.0, self.width * 0.5],
+                [0.0, self.fy, self.height * 0.5],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
 
     def project(self, points: np.ndarray, pose: CameraPose) -> Tuple[np.ndarray, np.ndarray]:
-        R = self._look_at(pose.eye, pose.target, pose.up)
-        pc = (R @ (points - pose.eye).T).T  # (N,3)
-        z = pc[:, 2:3]
-        # Perspective projection; ignore points behind camera.
-        u = self.fx * (pc[:, 0:1] / (z + 1e-9)) + self.width * 0.5
-        v = self.fy * (pc[:, 1:2] / (z + 1e-9)) + self.height * 0.5
-        return np.hstack([u, v]), z.ravel()
+        T = self.compute_world2cam_matrix(pose)
+        K = self.intrinsic_matrix()
 
+        points_h = np.hstack([points, np.ones((points.shape[0], 1))])  # (N,4)
+        cam_h = (T @ points_h.T).T  # (N,4) in camera coords (homogeneous)
+        cam = cam_h[:, :3]
+
+        proj = (K @ cam.T).T  # (N,3)
+        z = proj[:, 2:3]
+        uv = proj[:, :2] / (z + 1e-9)
+        return uv, cam[:, 2]
+
+    def to_camera_coords(self, points: np.ndarray, pose: CameraPose) -> np.ndarray:
+        T = self.compute_world2cam_matrix(pose)
+        points_h = np.hstack([points, np.ones((points.shape[0], 1))])
+        cam_h = (T @ points_h.T).T
+        return cam_h[:, :3]
+
+    def compute_cam2world_matrix(self, pose: CameraPose) -> np.ndarray:
+        """Camera-to-world with camera axes: X right, Y down (opposite up), Z forward."""
+        f = pose.target - pose.eye
+        z_axis = f / (np.linalg.norm(f) + 1e-9)
+        up = pose.up / (np.linalg.norm(pose.up) + 1e-9)
+        y_axis = -up
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-9)
+        R = np.stack([x_axis, y_axis, z_axis], axis=1)  # columns are axes in world
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = pose.eye
+        return T
+
+    def compute_world2cam_matrix(self, pose: CameraPose) -> np.ndarray:
+        T_cam2world = self.compute_cam2world_matrix(pose)
+        return np.linalg.inv(T_cam2world)
 
     def frustum_segments(
         self,
@@ -55,14 +81,14 @@ class SimpleCamera:
         far: float = 0.1,
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         """Return line segments (p0,p1) describing camera frustum in world space."""
-        R = self._look_at(pose.eye, pose.target, pose.up)  # rows: cam axes in world
+        T_cam2world = self.compute_cam2world_matrix(pose)
         fov_x = self.fov_x
         fov_y = self.fov_y
         tx = math.tan(fov_x * 0.5)
         ty = math.tan(fov_y * 0.5)
 
         def cam_dir(nx: float, ny: float) -> np.ndarray:
-            d = np.array([nx * tx, ny * ty, -1.0])
+            d = np.array([nx * tx, ny * ty, 1.0])
             return d / (np.linalg.norm(d) + 1e-9)
 
         corners_cam = [
@@ -74,14 +100,16 @@ class SimpleCamera:
 
         segs: List[Tuple[np.ndarray, np.ndarray]] = []
         for d in corners_cam:
-            pn = pose.eye + (R.T @ (d * near))
-            pf = pose.eye + (R.T @ (d * far))
+            pn_cam = np.hstack([d * near, 1.0])
+            pf_cam = np.hstack([d * far, 1.0])
+            pn = (T_cam2world @ pn_cam)[:3]
+            pf = (T_cam2world @ pf_cam)[:3]
             segs.append((pose.eye, pn))
             segs.append((pn, pf))
 
         # Connect near and far rectangles.
-        near_pts = [pose.eye + (R.T @ (d * near)) for d in corners_cam]
-        far_pts = [pose.eye + (R.T @ (d * far)) for d in corners_cam]
+        near_pts = [(T_cam2world @ np.hstack([d * near, 1.0]))[:3] for d in corners_cam]
+        far_pts = [(T_cam2world @ np.hstack([d * far, 1.0]))[:3] for d in corners_cam]
         for i in range(4):
             segs.append((near_pts[i], near_pts[(i + 1) % 4]))
             segs.append((far_pts[i], far_pts[(i + 1) % 4]))

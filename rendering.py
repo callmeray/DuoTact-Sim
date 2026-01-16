@@ -105,6 +105,31 @@ class DuotactVisualizer:
             showlegend=False,
         )
 
+    def _axes_trace(
+        self,
+        origin: np.ndarray,
+        axes: np.ndarray,
+        scale: float = 0.02,
+        colors: tuple = ("red", "green", "blue"),
+        name: str = "axes",
+    ) -> List[go.Scatter3d]:
+        traces: List[go.Scatter3d] = []
+        for i in range(3):
+            axis_vec = axes[:, i]
+            p1 = origin + axis_vec * scale
+            traces.append(
+                go.Scatter3d(
+                    x=[origin[0], p1[0]],
+                    y=[origin[1], p1[1]],
+                    z=[origin[2], p1[2]],
+                    mode="lines",
+                    line=dict(color=colors[i], width=4),
+                    name=f"{name}_{i}",
+                    showlegend=False,
+                )
+            )
+        return traces
+
     def _markers_trace(self, points: np.ndarray, color: str = "orange", size: int = 5, name: str = "markers") -> go.Scatter3d:
         return go.Scatter3d(
             x=points[:, 0],
@@ -146,6 +171,8 @@ class DuotactVisualizer:
         frustum_segments: Optional[List[tuple]] = None,
         camera_point: Optional[np.ndarray] = None,
         markers: Optional[np.ndarray] = None,
+        camera_axes: Optional[np.ndarray] = None,
+        camera_axes_scale: float = 0.02,
     ) -> None:
         data = [self._mesh_trace(mesh), self._frame_trace(mesh), self._ridge_trace(mesh)]
         if force_vectors:
@@ -156,6 +183,8 @@ class DuotactVisualizer:
             data.append(self._point_trace(camera_point, color="#d62728", size=6, name="camera"))
         if markers is not None and markers.size > 0:
             data.append(self._markers_trace(markers, color="orange", size=5, name="markers"))
+        if camera_point is not None and camera_axes is not None:
+            data.extend(self._axes_trace(camera_point, camera_axes, scale=camera_axes_scale, name="cam_axes"))
         fig = go.Figure(data=data)
         fig.update_layout(
             title=title,
